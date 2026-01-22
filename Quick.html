@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QuakeJS - Phase 1 Prototype</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Courier New', monospace;
+            background: #000;
+            color: #0f0;
+            overflow: hidden;
+        }
+        
+        #game-container {
+            width: 100vw;
+            height: 100vh;
+            position: relative;
+        }
+        
+        #canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(to bottom, #1a1a2e 0%, #16213e 100%);
+            cursor: none;
+        }
+        
+        #debug-hud {
+            position: fixed;
+            top: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.8);
+            color: #0f0;
+            font-size: 12px;
+            padding: 12px;
+            border: 1px solid #0f0;
+            font-family: 'Courier New', monospace;
+            line-height: 1.6;
+            pointer-events: none;
+            z-index: 100;
+        }
+        
+        #debug-hud div {
+            margin: 2px 0;
+        }
+        
+        #debug-hud strong {
+            color: #0ff;
+        }
+        
+        #instructions {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.9);
+            border: 2px solid #0f0;
+            padding: 30px;
+            text-align: center;
+            z-index: 200;
+            max-width: 600px;
+        }
+        
+        #instructions h1 {
+            color: #0ff;
+            margin-bottom: 20px;
+            font-size: 24px;
+        }
+        
+        #instructions h2 {
+            color: #0f0;
+            margin: 15px 0 10px 0;
+            font-size: 16px;
+        }
+        
+        #instructions ul {
+            list-style: none;
+            text-align: left;
+            margin: 10px 0;
+        }
+        
+        #instructions li {
+            margin: 5px 0;
+            padding-left: 20px;
+        }
+        
+        #instructions button {
+            margin-top: 20px;
+            padding: 10px 30px;
+            background: #0f0;
+            color: #000;
+            border: none;
+            font-family: 'Courier New', monospace;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        #instructions button:hover {
+            background: #0ff;
+            transform: scale(1.05);
+        }
+        
+        .hidden {
+            display: none !important;
+        }
+        
+        #crosshair {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 20px;
+            height: 20px;
+            pointer-events: none;
+            z-index: 50;
+        }
+        
+        #crosshair::before,
+        #crosshair::after {
+            content: '';
+            position: absolute;
+            background: rgba(0, 255, 0, 0.8);
+        }
+        
+        #crosshair::before {
+            top: 50%;
+            left: 0;
+            width: 100%;
+            height: 2px;
+            transform: translateY(-50%);
+        }
+        
+        #crosshair::after {
+            top: 0;
+            left: 50%;
+            width: 2px;
+            height: 100%;
+            transform: translateX(-50%);
+        }
+    </style>
+</head>
+<body>
+    <div id="game-container">
+        <canvas id="canvas"></canvas>
+        <div id="crosshair"></div>
+        <div id="debug-hud"></div>
+        
+        <div id="instructions">
+            <h1>🎮 QUAKEJS - PHASE 1 PROTOTYPE</h1>
+            <h2>УПРАВЛЕНИЕ:</h2>
+            <ul>
+                <li>WASD - движение</li>
+                <li>SPACE - прыжок (зажми для bunny hop)</li>
+                <li>SHIFT - бег</li>
+                <li>CTRL - присесть</li>
+                <li>МЫШЬ - обзор</li>
+                <li>ESC - выход из режима захвата мыши</li>
+                <li>F3 - показать/скрыть отладку</li>
+            </ul>
+            <h2>МЕХАНИКИ:</h2>
+            <ul>
+                <li>🏃 Bunny Hopping - прыгай в движении для ускорения</li>
+                <li>🌪️ Strafe Jumping - двигайся по диагонали в воздухе</li>
+                <li>⚡ Speed Bonus - до 2.5x скорости!</li>
+            </ul>
+            <button id="start-btn">НАЧАТЬ ИГРУ</button>
+        </div>
+    </div>
+
+    <script>
+        // ============================================
+        // МАТЕМАТИЧЕСКИЕ УТИЛИТЫ
+        // ============================================
+        const mat4 = {
+            create() {
+                return new Float32Array([
+                    1, 0, 0, 0,
+                    0, 1, 0, 0,
+                    0, 0, 1, 0,
+                    0, 0, 0, 1
+                ]);
+            },
+            
+            perspective(fov, aspect, near, far) {
+                const f = 1.0 / Math.tan(fov / 2);
+                const nf = 1 / (near - far);
+                return new Float32Array([
+                    f / aspect, 0, 0, 0,
+                    0, f, 0, 0,
+                    0, 0, (far + near) * nf, -1,
+                    0, 0, 2 * far * near * nf, 0
+                ]);
+            }
+        };
+
+        // ============================================
+        // INPUT MANAGER
+        // ============================================
+        class InputManager {
+            constructor(element) {
+                this.element = element;
+                this.keys = new Map();
+                this.mouse = { x: 0, y: 0, dx: 0, dy: 0 };
+                this.mouseButtons = new Map();
+                this.locked = false;
+                this.setupEventListeners();
+            }
+            
+            setupEventListeners() {
+                window.addEventListener('keydown', e => {
+                    const state = this.keys.get(e.code) || {
+                        down: false,
+                        pressedThisFrame: false,
+                        releasedThisFrame: false
+                    };
+                    
+                    if (!state.down) state.pressedThisFrame = true;
+                    state.down = true;
+                    this.keys.set(e.code, state);
+                    
+                    if ((e.code === 'Space' || e.code === 'Tab') && 
+                        document.pointerLockElement === this.element) {
+                        e.preventDefault();
+                    }
+                });
+                
+                window.addEventListener('keyup', e => {
+                    const state = this.keys.get(e.code) || {
+                        down: false,
+                        pressedThisFrame: false,
+                        releasedThisFrame: false
+                    };
+                    state.down = false;
+                    state.releasedThisFrame = true;
+                    this.keys.set(e.code, state);
+                });
+                
+                this.element.addEventListener('mousemove', e => {
+                    if (this.locked) {
+                        this.mouse.dx += e.movementX;
+                        this.mouse.dy += e.movementY;
+                    }
+                });
+                
+                document.addEventListener('pointerlockchange', () => {
+                    this.locked = document.pointerLockElement === this.element;
+                    if (!this.locked) {
+                        this.mouse.dx = 0;
+                        this.mouse.dy = 0;
+                    }
+                });
+                
+                this.element.addEventListener('click', () => {
+                    if (!this.locked) {
+                        this.element.requestPointerLock();
+                    }
+                });
+            }
+            
+            isKeyPressed(code) {
+                const state = this.keys.get(code);
+                return state ? state.down : false;
+            }
+            
+            isKeyJustPressed(code) {
+                const state = this.keys.get(code);
+                return state ? state.pressedThisFrame : false;
+            }
+            
+            getMouseDelta() {
+                const delta = { dx: this.mouse.dx, dy: this.mouse.dy };
+                this.mouse.dx = 0;
+                this.mouse.dy = 0;
+                return delta;
+            }
+            
+            endFrame() {
+                for (const [key, state] of this.keys.entries()) {
+                    state.pressedThisFrame = false;
+                    state.releasedThisFrame = false;
+                    this.keys.set(key, state);
+                }
+            }
+        }
+
+        // ============================================
+        // CONFIG
+        // ============================================
+        const InputConfig = {
+            keys: {
+                forward: 'KeyW',
+                backward: 'KeyS',
+                left: 'KeyA',
+                right: 'KeyD',
+                jump: 'Space',
+                crouch: 'ControlLeft',
+                sprint: 'ShiftLeft',
+                debug: 'F3'
+            },
+            mouseSensitivity: 0.002,
+            mouseInvert: false
+        };
+
+        // ============================================
+        // QUAKE MOVEMENT
+        // ============================================
+        class QuakeMovement {
+            static strafeJump(velocity, wishDir, dt, accel, wishSpeed) {
+                const currentSpeed = velocity.x * wishDir.x + velocity.z * wishDir.z;
+                const addSpeed = wishSpeed - currentSpeed;
+                
+                if (addSpeed > 0) {
+                    const accelSpeed = Math.min(accel * dt * wishSpeed, addSpeed);
+                    velocity.x += accelSpeed * wishDir.x;
+                    velocity.z += accelSpeed * wishDir.z;
+                }
+            }
+        }
+
+        // ============================================
+        // PLAYER CONTROLLER
+        // ============================================
+        class PlayerController {
+            constructor() {
+                this.position = { x: 0, y: 0, z: 0 };
+                this.velocity = { x: 0, y: 0, z: 0 };
+                this.rotation = { pitch: 0, yaw: 0 };
+                
+                this.moveSpeed = 8.0;
+                this.sprintMultiplier = 1.5;
+                this.crouchSpeed = 0.5;
+                this.airAccel = 10.0;
+                this.groundAccel = 15.0;
+                
+                this.jumpForce = 12.0;
+                this.gravity = -30.0;
+                this.onGround = false;
+                this.groundCheckDistance = 0.1;
+                
+                this.speedBonus = 1.0;
+                this.maxSpeedBonus = 2.5;
+                this.bonusDecay = 0.95;
+                this.bonusGain = 1.05;
+                
+                this.height = 1.8;
+                this.eyeHeight = 1.6;
+                this.isCrouching = false;
+                this.isSprinting = false;
+            }
+            
+            update(dt, input) {
+                this.handleInput(input, dt);
+                this.applyPhysics(dt);
+                this.handleCollisions();
+            }
+            
+            handleInput(input, dt) {
+                // Камера
+                const mouseDelta = input.getMouseDelta();
+                this.rotation.yaw -= mouseDelta.dx * InputConfig.mouseSensitivity;
+                this.rotation.pitch -= mouseDelta.dy * InputConfig.mouseSensitivity;
+                this.rotation.pitch = Math.max(-Math.PI/2, Math.min(Math.PI/2, this.rotation.pitch));
+                
+                // Движение
+                let forward = 0, right = 0;
+                if (input.isKeyPressed(InputConfig.keys.forward)) forward += 1;
+                if (input.isKeyPressed(InputConfig.keys.backward)) forward -= 1;
+                if (input.isKeyPressed(InputConfig.keys.right)) right += 1;
+                if (input.isKeyPressed(InputConfig.keys.left)) right -= 1;
+                
+                const magnitude = Math.sqrt(forward * forward + right * right);
+                if (magnitude > 0) {
+                    forward /= magnitude;
+                    right /= magnitude;
+                }
+                
+                const yaw = this.rotation.yaw;
+                const wishDir = {
+                    x: Math.sin(yaw) * forward + Math.cos(yaw) * right,
+                    z: Math.cos(yaw) * forward - Math.sin(yaw) * right
+                };
+                
+                this.isCrouching = input.isKeyPressed(InputConfig.keys.crouch);
+                this.isSprinting = input.isKeyPressed(InputConfig.keys.sprint) && !this.isCrouching;
+                
+                let speed = this.moveSpeed;
+                if (this.isSprinting && this.onGround) speed *= this.sprintMultiplier;
+                if (this.isCrouching) speed *= this.crouchSpeed;
+                
+                if (magnitude > 0) {
+                    if (this.onGround) {
+                        const currentSpeed = this.velocity.x * wishDir.x + this.velocity.z * wishDir.z;
+                        const addSpeed = speed - currentSpeed;
+                        if (addSpeed > 0) {
+                            const accelSpeed = Math.min(this.groundAccel * dt * speed, addSpeed);
+                            this.velocity.x += accelSpeed * wishDir.x;
+                            this.velocity.z += accelSpeed * wishDir.z;
+                        }
+                    } else {
+                        QuakeMovement.strafeJump(this.velocity, wishDir, dt, this.airAccel, speed);
+                    }
+                }
+                
+                // Прыжок
+                if (input.isKeyJustPressed(InputConfig.keys.jump)) {
+                    if (this.onGround) {
+                        this.velocity.y = this.jumpForce;
+                        this.onGround = false;
+                        
+                        const horizontalSpeed = Math.sqrt(
+                            this.velocity.x ** 2 + this.velocity.z ** 2
+                        );
+                        if (horizontalSpeed > this.moveSpeed) {
+                            this.speedBonus = Math.min(
+                                this.speedBonus * this.bonusGain,
+                                this.maxSpeedBonus
+                            );
+                        }
+                    }
+                } else {
+                    if (this.speedBonus > 1.0) {
+                        this.speedBonus *= this.bonusDecay;
+                        if (this.speedBonus < 1.01) this.speedBonus = 1.0;
+                    }
+                }
+            }
+            
+            applyPhysics(dt) {
+                if (!this.onGround) {
+                    this.velocity.y += this.gravity * dt;
+                }
+                
+                if (this.onGround) {
+                    const groundFriction = 6.0;
+                    const factor = Math.exp(-groundFriction * dt);
+                    this.velocity.x *= factor;
+                    this.velocity.z *= factor;
+                } else {
+                    const airFriction = 0.5;
+                    const factor = Math.exp(-airFriction * dt);
+                    this.velocity.x *= factor;
+                    this.velocity.z *= factor;
+                }
+                
+                this.position.x += this.velocity.x * dt;
+                this.position.y += this.velocity.y * dt;
+                this.position.z += this.velocity.z * dt;
+                
+                const maxSpeed = this.moveSpeed * this.speedBonus * 
+                                 (this.isSprinting ? this.sprintMultiplier : 1.0);
+                const horizontalSpeed = Math.sqrt(
+                    this.velocity.x ** 2 + this.velocity.z ** 2
+                );
+                if (horizontalSpeed > maxSpeed) {
+                    const factor = maxSpeed / horizontalSpeed;
+                    this.velocity.x *= factor;
+                    this.velocity.z *= factor;
+                }
+            }
+            
+            handleCollisions() {
+                const groundY = 0;
+                const tolerance = this.groundCheckDistance;
+                
+                if (this.position.y <= groundY + tolerance) {
+                    this.position.y = groundY;
+                    if (this.velocity.y < 0) this.velocity.y = 0;
+                    this.onGround = true;
+                } else {
+                    this.onGround = false;
+                }
+            }
+            
+            getCameraPosition() {
+                return {
+                    x: this.position.x,
+                    y: this.position.y + this.eyeHeight,
+                    z: this.position.z
+                };
+            }
+        }
+
+        // ============================================
+        // SIMPLE RENDERER
+        // ============================================
+        class SimpleRenderer {
+            constructor(canvas) {
+                this.canvas = canvas;
+                this.ctx = canvas.getContext('2d');
+                this.gridSize = 50;
+            }
+            
+            render(player) {
+                const w = this.canvas.width;
+                const h = this.canvas.height;
+                
+                // Очистка
+                this.ctx.fillStyle = '#0a0a1a';
+                this.ctx.fillRect(0, 0, w, h);
+                
+                // Небо/земля
+                const horizon = h/2 - player.rotation.pitch * 200;
+                
+                this.ctx.fillStyle = '#1a1a2e';
+                this.ctx.fillRect(0, 0, w, horizon);
+                
+                this.ctx.fillStyle = '#16213e';
+                this.ctx.fillRect(0, horizon, w, h - horizon);
+                
+                // Сетка пола (псевдо 3D)
+                this.ctx.save();
+                this.ctx.translate(w/2, horizon);
+                
+                const camY = player.position.y + player.eyeHeight;
+                const scale = 300 / (camY + 1);
+                
+                this.ctx.strokeStyle = '#0f0';
+                this.ctx.lineWidth = 1;
+                this.ctx.globalAlpha = 0.3;
+                
+                for (let i = -10; i <= 10; i++) {
+                    const z = i * this.gridSize - (player.position.z % this.gridSize);
+                    const y = z * scale;
+                    
+                    if (y > -h/2 && y < h) {
+                        this.ctx.beginPath();
+                        this.ctx.moveTo(-w, y);
+                        this.ctx.lineTo(w, y);
+                        this.ctx.stroke();
+                    }
+                }
+                
+                for (let i = -20; i <= 20; i++) {
+                    const x = i * this.gridSize - (player.position.x % this.gridSize);
+                    const screenX = x * Math.cos(player.rotation.yaw) * scale;
+                    
+                    if (Math.abs(screenX) < w) {
+                        this.ctx.beginPath();
+                        this.ctx.moveTo(screenX, -h/2);
+                        this.ctx.lineTo(screenX, h);
+                        this.ctx.stroke();
+                    }
+                }
+                
+                this.ctx.restore();
+                
+                // Линия горизонта
+                this.ctx.strokeStyle = '#0ff';
+                this.ctx.lineWidth = 2;
+                this.ctx.globalAlpha = 0.5;
+                this.ctx.beginPath();
+                this.ctx.moveTo(0, horizon);
+                this.ctx.lineTo(w, horizon);
+                this.ctx.stroke();
+                this.ctx.globalAlpha = 1;
+            }
+        }
+
+        // ============================================
+        // DEBUG HUD
+        // ============================================
+        class DebugHUD {
+            constructor() {
+                this.enabled = true;
+                this.container = document.getElementById('debug-hud');
+            }
+            
+            toggle() {
+                this.enabled = !this.enabled;
+                this.container.style.display = this.enabled ? 'block' : 'none';
+            }
+            
+            update(fps, player, input) {
+                if (!this.enabled) return;
+                
+                const speed = Math.sqrt(
+                    player.velocity.x ** 2 + player.velocity.z ** 2
+                );
+                
+                this.container.innerHTML = `
+                    <div><strong>FPS:</strong> ${fps.toFixed(1)}</div>
+                    <div><strong>Position:</strong> ${player.position.x.toFixed(1)}, ${player.position.y.toFixed(1)}, ${player.position.z.toFixed(1)}</div>
+                    <div><strong>Velocity:</strong> ${player.velocity.x.toFixed(1)}, ${player.velocity.y.toFixed(1)}, ${player.velocity.z.toFixed(1)}</div>
+                    <div><strong>Speed:</strong> ${speed.toFixed(2)} u/s</div>
+                    <div><strong>Rotation:</strong> Y:${(player.rotation.yaw * 180/Math.PI).toFixed(0)}° P:${(player.rotation.pitch * 180/Math.PI).toFixed(0)}°</div>
+                    <div><strong>On Ground:</strong> ${player.onGround ? 'YES' : 'NO'}</div>
+                    <div><strong>Speed Bonus:</strong> ${player.speedBonus.toFixed(2)}x</div>
+                    <div><strong>Crouching:</strong> ${player.isCrouching ? 'YES' : 'NO'}</div>
+                    <div><strong>Sprinting:</strong> ${player.isSprinting ? 'YES' : 'NO'}</div>
+                    <div><strong>Pointer Lock:</strong> ${input.locked ? 'YES' : 'NO'}</div>
+                `;
+            }
+        }
+
+        // ============================================
+        // GAME ENGINE
+        // ============================================
+        class GameEngine {
+            constructor() {
+                this.canvas = document.getElementById('canvas');
+                this.resizeCanvas();
+                
+                this.input = new InputManager(this.canvas);
+                this.player = new PlayerController();
+                this.renderer = new SimpleRenderer(this.canvas);
+                this.debug = new DebugHUD();
+                
+                this.running = false;
+                this.lastTime = 0;
+                this.frameCount = 0;
+                this.fpsAccumulator = 0;
+                this.currentFPS = 60;
+                
+                window.addEventListener('resize', () => this.resizeCanvas());
+                
+                // F3 для отладки
+                window.addEventListener('keydown', e => {
+                    if (e.code === 'F3') {
+                        e.preventDefault();
+                        this.debug.toggle();
+                    }
+                });
+            }
+            
+            resizeCanvas() {
+                this.canvas.width = window.innerWidth;
+                this.canvas.height = window.innerHeight;
+            }
+            
+            start() {
+                this.running = true;
+                this.lastTime = performance.now();
+                this.loop();
+            }
+            
+            loop() {
+                if (!this.running) return;
+                
+                const currentTime = performance.now();
+                const deltaTime = Math.min((currentTime - this.lastTime) / 1000, 0.1);
+                this.lastTime = currentTime;
+                
+                this.frameCount++;
+                this.fpsAccumulator += deltaTime;
+                if (this.fpsAccumulator >= 1.0) {
+                    this.currentFPS = this.frameCount / this.fpsAccumulator;
+                    this.frameCount = 0;
+                    this.fpsAccumulator = 0;
+                }
+                
+                this.update(deltaTime);
+                this.render();
+                
+                requestAnimationFrame(() => this.loop());
+            }
+            
+            update(dt) {
+                this.player.update(dt, this.input);
+                this.debug.update(this.currentFPS, this.player, this.input);
+                this.input.endFrame();
+            }
+            
+            render() {
+                this.renderer.render(this.player);
+            }
+        }
+
+        // ============================================
+        // INITIALIZATION
+        // ============================================
+        let game;
+        
+        document.getElementById('start-btn').addEventListener('click', () => {
+            document.getElementById('instructions').classList.add('hidden');
+            game = new GameEngine();
+            game.start();
+        });
+    </script>
+</body>
+</html>
